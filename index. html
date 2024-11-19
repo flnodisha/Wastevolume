@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waste Classification Camera</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: black;
+            overflow-y: auto;
+        }
+
+        #header {
+            position: absolute;
+            top: 0px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 34px;
+            font-weight: bold;
+            z-index: 1000;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        #videoElement {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        #captureBtn {
+            position: absolute;
+            bottom: 30px;
+            width: 70px;
+            height: 70px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        #loadingOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: white;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+        }
+
+        #loadingAnimation {
+            width: 350px;
+            height: 350px;
+        }
+
+        #resultOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            color: black;
+            font-size: 2em;
+            font-weight: bold;
+            z-index: 999;
+            transition: background-color 0.5s ease;
+            text-align: center;
+        }
+
+        #resultText {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-top: 60px;
+        }
+
+        #itemName {
+            font-size: 0.8em;
+        }
+
+        #resultVideo {
+            width: 150px;
+            height: 150px;
+            margin-top: 50px;
+            z-index: 9999;
+        }
+
+        #retryButton {
+            padding: 10px 20px;
+            margin-top: 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.6em;
+            display: none;
+        }
+
+        #retryButton:hover {
+            background-color: #45a049;
+        }
+
+        #volumeInstructions {
+            position: absolute;
+            bottom: 120px;
+            color: white;
+            text-align: center;
+            width: 100%;
+            font-size: 14px;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+    </style>
+</head>
+<body>
+    <div id="header">ସରକାରୀ ଉନ୍ନୀତ ଉଚ୍ଚ ବିଦ୍ୟାଳୟ, ବାମୁଣୀ</div>
+    
+    <video id="videoElement" autoplay playsinline></video>
+    <canvas id="canvas" style="display: none;"></canvas>
+
+    <div id="volumeInstructions">
+        Use volume buttons or tap the circle to capture
+    </div>
+    <button id="captureBtn"></button>
+
+    <div id="loadingOverlay">
+        <video id="loadingAnimation" autoplay loop muted playsinline>
+            <source src="loading.webm" type="video/webm">
+        </video>
+    </div>
+
+    <div id="resultOverlay">
+        <div id="resultText">
+            <div id="wasteType"></div>
+            <div id="itemName"></div>
+        </div>
+        <video id="resultVideo" autoplay loop muted playsinline></video>
+        <button id="retryButton">Try Again</button>
+    </div>
+
+    <audio id="loadingSound" src="loading.mp3"></audio>
+    <audio id="biodegradableSound" src="bio.mp3"></audio>
+    <audio id="nonbiodegradableSound" src="nonbio.mp3"></audio>
+
+    <script>
+        const API_KEY = 'AIzaSyBaV1DR8cXEDJ2RQoqYOT_ZsjFyvKZrZIY';
+        
+        const video = document.getElementById('videoElement');
+        const canvas = document.getElementById('canvas');
+        const captureBtn = document.getElementById('captureBtn');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const resultOverlay = document.getElementById('resultOverlay');
+        const wasteType = document.getElementById('wasteType');
+        const itemName = document.getElementById('itemName');
+        const resultVideo = document.getElementById('resultVideo');
+        const retryButton = document.getElementById('retryButton');
+        
+        const loadingSound = document.getElementById('loadingSound');
+        const biodegradableSound = document.getElementById('biodegradableSound');
+        const nonbiodegradableSound = document.getElementById('nonbiodegradableSound');
+
+        let audioContext = null;
+        let isProcessing = false;
+
+        function setupVolumeButtonCapture() {
+            // Initialize audio context for keeping media session active
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            gainNode.gain.value = 0; // Silent
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            oscillator.start();
+
+            // Setup MediaSession API
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.setActionHandler('previoustrack', () => {
+                    if (!isProcessing) {
+                        capturePhoto();
+                    }
+                });
+                
+                navigator.mediaSession.setActionHandler('nexttrack', () => {
+                    if (!isProcessing) {
+                        capturePhoto();
+                    }
+                });
+            }
+
+            // Keyboard event listener for volume buttons
+            document.addEventListener('keydown', (event) => {
+                if (event.code === 'VolumeUp' || event.code === 'VolumeDown') {
+                    event.preventDefault();
+                    if (!isProcessing) {
+                        capturePhoto();
+                    }
+                }
+            });
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    } 
+                });
+                video.srcObject = stream;
+                
+                // Setup volume button capture after camera is initialized
+                setupVolumeButtonCapture();
+                
+            } catch (err) {
+                console.error('Error:', err);
+                alert('Error accessing camera. Please ensure camera permissions are granted.');
+            }
+        }
+
+        function hideResult() {
+            resultOverlay.style.display = 'none';
+            retryButton.style.display = 'none';
+            stopAudio(biodegradableSound);
+            stopAudio(nonbiodegradableSound);
+            isProcessing = false;
+        }
+
+        async function capturePhoto() {
+            if (isProcessing) return;
+            
+            isProcessing = true;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const imageBase64 = canvas.toDataURL('image/jpeg', 0.8);
+
+            loadingOverlay.style.display = 'flex';
+            playAudio(loadingSound);
+
+            try {
+                const { classification, itemDetected } = await classifyWaste(imageBase64);
+
+                stopAudio(loadingSound);
+                retryButton.style.display = 'none';
+
+                resultOverlay.style.display = 'flex';
+                
+                if (classification === 'unknown') {
+                    resultOverlay.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
+                    wasteType.textContent = 'Unknown Object';
+                    wasteType.style.color = 'black';
+                    itemName.style.color = 'black';
+                    retryButton.style.display = 'block';
+                    resultVideo.style.display = 'none';
+                    isProcessing = false;
+                } else {
+                    retryButton.style.display = 'none';
+                    resultVideo.style.display = 'block';
+                    
+                    switch(classification) {
+                        case 'biodegradable':
+                            resultOverlay.style.backgroundColor = '#b9fab9';
+                            wasteType.textContent = 'Biodegradable (ମାଟିରେ ମିଶିଯିବ)';
+                            playAudio(biodegradableSound);
+                            resultVideo.src = 'bio.webm';
+                            break;
+                        case 'nonbiodegradable':
+                            resultOverlay.style.backgroundColor = '#f87b7b';
+                            wasteType.textContent = 'Non-Biodegradable (ମାଟିରେ ମିଶିବ ନାହିଁ)';
+                            playAudio(nonbiodegradableSound);
+                            resultVideo.src = 'nonbio.webm';
+                            break;
+                    }
+                }
+
+                itemName.textContent = `Detected Item: ${itemDetected}`;
+                resultVideo.load();
+                resultVideo.play();
+
+                if (classification !== 'unknown') {
+                    setTimeout(hideResult, 10000);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert(`Error: ${error.message}`);
+                isProcessing = false;
+            } finally {
+                loadingOverlay.style.display = 'none';
+            }
+        }
+
+        function playAudio(audioElement) {
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+            audioElement.currentTime = 0;
+            audioElement.play();
+        }
+
+        function stopAudio(audioElement) {
+            audioElement.pause();
+            audioElement.currentTime = 0;
+        }
+
+        async function classifyWaste(imageBase64) {
+            const API_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+            const prompt = "Analyze this image and provide two pieces of information in the following format only: 'Classification: [biodegradable/nonbiodegradable], Item: [name of the item]'. If you cannot identify the item or classify it, respond with 'Classification: unknown, Item: Unknown object'";
+
+            const base64Image = imageBase64.split(',')[1];
+
+            const requestData = {
+                contents: [{
+                    parts: [{
+                        text: prompt
+                    }, {
+                        inline_data: {
+                            mime_type: "image/jpeg",
+                            data: base64Image
+                        }
+                    }]
+                }],
+                generation_config: {
+                    temperature: 0.1,
+                    top_p: 0.8,
+                    top_k: 10,
+                    max_output_tokens: 1024
+                },
+                safety_settings: [
+                    {
+                        category: "HARM_CATEGORY_HARASSMENT",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    },
+                    {
+                        category: "HARM_CATEGORY_HATE_SPEECH",
+                        threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                    }
+                ]
+            };
+
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestData)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error?.message || 'API request failed');
+                }
+
+                const data = await response.json();
+                if (!data.candidates || !data.candidates[0]?.content?.parts?.[0]?.text) {
+                    throw new Error('Invalid response format from API');
+                }
+
+                const responseText = data.candidates[0].content.parts[0].text;
+                const classificationMatch = responseText.match(/Classification:\s*(biodegradable|nonbiodegradable|unknown)/i);
+                const itemMatch = responseText.match(/Item:\s*([^,\n]+)/i);
+
+                const classification = classificationMatch ? classificationMatch[1].toLowerCase() : 'unknown';
+                const itemDetected = itemMatch ? itemMatch[1].trim() : 'Unknown object';
+
+                return { classification, itemDetected };
+            } catch (error) {
+                console.error('Classification error:', error);
+                throw error;
+            }
+        }
+
+        // Start the camera when page loads
+        startCamera();
+
+        // Add click handler for capture button
+        captureBtn.addEventListener('click', () => {
+            if (!isProcessing) {
+                capturePhoto();
+            }
+        });
+
+        // Add click handler for retry button
+        retryButton.addEventListener('click', () => {
+            hideResult();
+        });
+
+        // Handle page visibility change to prevent multiple captures
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                isProcessing = false;
+            }
+        });
+    </script>
+</body>
+</html>
